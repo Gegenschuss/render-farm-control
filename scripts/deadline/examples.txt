@@ -67,7 +67,7 @@ Behavior:
 
 Behavior:
 - clears screen + shows farm header animation
-- submits post-job shutdown command with allow-list NAME-gpu1
+- submits post-job shutdown command to Deadline group "rop"
 - job is submitted in Suspended state
 
 

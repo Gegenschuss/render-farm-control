@@ -44,7 +44,6 @@ for arg in "$@"; do
     esac
 done
 
-ALLOW_LIST="${FARM_DEADLINE_ALLOW_LIST:?Set FARM_DEADLINE_ALLOW_LIST in config/secrets.sh}"
 JOB_DATE_TIME="$(TZ=Europe/Berlin date '+%d.%m.%Y %H:%M')"
 if [ "$WITH_WORKSTATION" -eq 1 ]; then
     JOB_NAME="Farm PostJob Shutdown + Workstation ${JOB_DATE_TIME}"
@@ -56,7 +55,6 @@ fi
 farm_print_title "DEADLINE SHUTDOWN SUBMIT"
 echo "  Submitting farm post-job shutdown command as Suspended."
 echo "  Job name:   $JOB_NAME"
-echo "  Allow-list: $ALLOW_LIST"
 if [ "$WITH_WORKSTATION" -eq 1 ]; then
     echo "  Local WS:   included (--local)"
 else
@@ -68,8 +66,8 @@ CMD=(
     "$FARM_SCRIPTS_DIR/deadline/submit.sh"
     "--no-header"
     "--name" "$JOB_NAME"
-    "--allow-list" "$ALLOW_LIST"
     "--suspended"
+    "--group" "rop"
     "--script" "$FARM_SCRIPTS_DIR/core/shutdown.sh"
 )
 

@@ -85,10 +85,13 @@ if [ -n "$FOUND_TGZ" ] && [ ! -f "$SEARCH_DIR/$(basename "$FOUND_TGZ")" ]; then
             echo "  [dry-run] would copy to install share."
         else
             mkdir -p "$SEARCH_DIR" 2>/dev/null
+            farm_spin_start "copying $(basename "$FOUND_TGZ") to install share"
             cp "$FOUND_TGZ" "$SEARCH_DIR/" || {
+                farm_spin_stop
                 farm_print_error "Copy failed."
                 exit 1
             }
+            farm_spin_stop
             farm_print_ok "Copied to install share."
         fi
     fi

@@ -440,10 +440,11 @@ scripts/
         debug.sh                        Check Windows update activity on dual-boot
         launch_houdini.sh               Launch latest Houdini from /opt
         launch_nuke.sh                  Launch latest Nuke
+        mplay_latest.sh                 Open an EXR/sequence in mplay (EXR desktop handler)
         setup_new_node.sh               Provision a fresh machine as render node
 
 remote_menu/                        Remote menu, macOS + Linux (Tailscale VPN client)
-    remote_menu.sh                      Interactive launcher (arrow keys + shortcuts)
+    remote_menu.sh                      Interactive launcher (arrow keys, shortcuts, mouse)
     core/
         wake.sh                         Wake nodes + mount shares + connect
         ping.sh                         Ping all nodes via Tailscale
@@ -561,7 +562,8 @@ scripts/deadline/submit.sh \
 #### submit_shutdown.sh -- Post-Job Shutdown
 
 Submits a **suspended** Deadline job that runs `shutdown.sh --postjob`
-when manually resumed or when dependencies complete.
+when manually resumed or when dependencies complete. The job is
+submitted to the Deadline group `rop`.
 
 #### finalize.sh -- Batch Finalizer
 
@@ -614,6 +616,7 @@ that opens the menu in Terminal.
 | `debug.sh` | Check Windows Update activity on dual-boot nodes |
 | `launch_houdini.sh` | Launch latest Houdini from `/opt` |
 | `launch_nuke.sh` | Launch latest Nuke |
+| `mplay_latest.sh` | Open an EXR (or its whole sequence) in mplay from the latest Houdini; `--install` registers it as the `image/x-exr` handler |
 | `setup_new_node.sh` | Provision a fresh machine as render node |
 
 #### Deploying software (`install_app.sh`)
@@ -646,6 +649,28 @@ forced to reinstall:
 The chosen nodes install in parallel in a synchronized tmux session
 (`Ctrl+b, y` toggles broadcast to all panes). Offline and Windows-booted
 nodes are detected over SSH and skipped automatically.
+
+Once the installers have finished, come back to the launching terminal and
+press `Enter` for the post-flight check. It re-queries every target you
+selected and compares it against the version the package should have
+installed, so a pane that died halfway through does not pass unnoticed:
+
+```
+  caitlin:      21.0.729      [installed]
+  stringer:     21.0.729      [installed]
+  barksdale:    21.0.631      [FAILED - still below 21.0.729]
+  marlo:        not installed [FAILED - not installed]
+  omar:         OFFLINE       [unreachable - not verified]
+```
+
+- **`Enter`** -- verify now (and, after a failure, check again once you have
+  fixed or restarted the install)
+- **`q`** -- skip the check (before the first run) or give up (after one)
+
+The script exits `0` only when every selected target reached the target
+version; it exits `1` if you give up with failures outstanding. A warning is
+printed if the tmux session is still open when you verify, since that usually
+means an install is still running.
 
 #### Updating the Houdini license (`license_houdini.sh`)
 
@@ -720,7 +745,9 @@ support `--dry-run` and `-y`.
 
 - Use `--dry-run` before any shutdown, reboot, or update operation
 - Use `--help` on any script for full flag documentation
-- The interactive menu (`Gegenschuss_farm_control.sh`) has keyboard shortcuts for every action
+- The interactive menus have keyboard shortcuts for every action and mouse support
+  (wheel moves, click selects, click again runs; `FARM_MOUSE=0` / `REMOTE_MOUSE=0` disable it,
+  hold Shift on Linux or Option on macOS to select terminal text while a menu is open)
 - All tmux sessions support `Ctrl+b, y` to toggle synchronized input across panes
 - Node definitions are the single source of truth -- add a node once in `config/secrets.sh`
   and every script picks it up automatically

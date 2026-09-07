@@ -2,6 +2,9 @@
 config/secrets.sh
 remote_menu/config/secrets.sh
 
+# Node-local assets kept out of the published repo
+private/
+
 # Claude Code local state
 .claude/
 

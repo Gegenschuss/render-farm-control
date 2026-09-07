@@ -106,11 +106,14 @@ if [[ "$COPY_ARCHIVE" =~ ^[Yy]$ ]]; then
     echo "  Copying to:"
     echo "    $SEARCH_DIR"
     echo ""
+    farm_spin_start "copying $(basename "$COPY_TAR") to install share"
     cp "$COPY_TAR" "$SEARCH_DIR/" || {
+        farm_spin_stop
         echo "  ERROR: Copy FAILED! Aborting."
         echo ""
         exit 1
     }
+    farm_spin_stop
     echo "  Copy successful."
     echo ""
 fi
@@ -363,4 +366,123 @@ fi
 farm_tmux_apply_config "$SESSION"
 farm_launch_terminal "$WINDOW_TITLE" "$X_START" "$SESSION" 2.0
 
+echo ""
+
+# --- Post-flight -------------------------------------------------------------
+# The installers run detached in the tmux window above, so without this the
+# script would exit having never learned whether any of them actually worked.
+# Wait for the user to come back, then re-query every selected target the same
+# way the pre-flight did and compare against the version the package was
+# supposed to install.
+
+# Re-query one selected target. Echoes: "<state>|<version>"
+# state: uptodate | update | notinstalled | unknown | offline
+postflight_probe() {
+    local i="$1" raw ver
+    if [ "${CAND_LOCAL[$i]}" = "1" ]; then
+        raw=$(query_installed_version "")
+    else
+        farm_get_node_os_status "${CAND_NAME[$i]}" "ssh"
+        if [ $? -ne 2 ]; then
+            echo "offline|"
+            return
+        fi
+        raw=$(query_installed_version "${CAND_NAME[$i]}")
+    fi
+    ver=$(farm_extract_version "$raw")
+    echo "$(farm_install_classify "$ver" "$TARGET_VERSION")|$ver"
+}
+
+# Print one post-flight line. Same layout as the pre-flight lines, but the
+# wording is about the outcome rather than the plan.
+print_result_line() {
+    local label="$1" ver="$2" state="$3"
+    case "$state" in
+        uptodate)
+            printf "  %-12s  ${FARM_C_OK}%-13s${FARM_C_RESET} ${FARM_C_OK}[installed]${FARM_C_RESET}\n" \
+                "$label:" "$ver" ;;
+        update)
+            printf "  %-12s  ${FARM_C_ERR}%-13s${FARM_C_RESET} ${FARM_C_ERR}[FAILED - still below %s]${FARM_C_RESET}\n" \
+                "$label:" "$ver" "$TARGET_VERSION" ;;
+        notinstalled)
+            printf "  %-12s  ${FARM_C_ERR}%-13s${FARM_C_RESET} ${FARM_C_ERR}[FAILED - not installed]${FARM_C_RESET}\n" \
+                "$label:" "not installed" ;;
+        offline)
+            printf "  %-12s  ${FARM_C_WARN}%-13s${FARM_C_RESET} ${FARM_C_WARN}[unreachable - not verified]${FARM_C_RESET}\n" \
+                "$label:" "OFFLINE" ;;
+        *)
+            printf "  %-12s  %-13s ${FARM_C_WARN}[unknown version]${FARM_C_RESET}\n" \
+                "$label:" "${ver:-?}" ;;
+    esac
+}
+
+# Verify every selected target once. Sets POSTFLIGHT_FAILED to the number of
+# targets that did not reach $TARGET_VERSION.
+run_postflight() {
+    local i probe state ver
+    local _ok=0 _bad=0 _unreach=0
+    echo ""
+    for i in "${SELECTED[@]}"; do
+        farm_spin_start "checking ${CAND_NAME[$i]}"
+        probe=$(postflight_probe "$i")
+        farm_spin_stop
+        state="${probe%%|*}"
+        ver="${probe#*|}"
+        print_result_line "${CAND_NAME[$i]}" "$ver" "$state"
+        case "$state" in
+            uptodate) (( _ok++ )) ;;
+            offline)  (( _unreach++ )) ;;
+            *)        (( _bad++ )) ;;
+        esac
+    done
+    echo ""
+    if [ $(( _bad + _unreach )) -eq 0 ]; then
+        farm_print_summary "$_ok installed ${FARM_G_SEP} $_bad failed ${FARM_G_SEP} $_unreach unreachable"
+    else
+        farm_print_danger_box "$_ok installed ${FARM_G_SEP} $_bad failed ${FARM_G_SEP} $_unreach unreachable"
+    fi
+    POSTFLIGHT_FAILED=$(( _bad + _unreach ))
+}
+
+farm_print_section "Post-flight check"
+echo "  The installers are running in the '$SESSION' tmux window."
+echo "  Come back here once they have finished, then verify."
+echo ""
+printf "  %-12s  ${FARM_C_NODE}%s${FARM_C_RESET}\n" "Expecting:" "${TARGET_VERSION:-unknown}"
+
+POSTFLIGHT_RUN=0
+while true; do
+    echo ""
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        farm_print_warn "tmux session '$SESSION' is still open - installs may still be running."
+    fi
+    farm_prompt_rule
+    if [ "$POSTFLIGHT_RUN" -eq 0 ]; then
+        echo "  [Enter]=verify now   q=skip"
+    else
+        echo "  [Enter]=check again   q=give up"
+    fi
+    read -p "  > " POST_SEL
+    case "$POST_SEL" in
+        q|Q)
+            echo ""
+            if [ "$POSTFLIGHT_RUN" -eq 0 ]; then
+                echo "  Skipped - installed versions were not verified."
+                echo ""
+                exit 0
+            fi
+            echo "  Giving up - $POSTFLIGHT_FAILED target(s) not verified."
+            echo ""
+            exit 1
+            ;;
+    esac
+
+    run_postflight
+    POSTFLIGHT_RUN=1
+
+    [ "$POSTFLIGHT_FAILED" -eq 0 ] && break
+done
+
+echo ""
+farm_print_ok "All selected targets are on ${TARGET_VERSION}."
 echo ""

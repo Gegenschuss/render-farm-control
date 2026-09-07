@@ -27,7 +27,8 @@ W="${FARM_UI_WIDTH:-60}"
 sec() {
     local label fill line=""
     label=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    fill=$(( W - ${#label} - 7 ))
+    # 59 total cols: same ruled-header geometry as the menu.
+    fill=$(( 59 - ${#label} - 6 ))
     (( fill < 0 )) && fill=0
     printf -v line "%${fill}s" ""
     printf "  ${FARM_C_DIM}${FARM_G_RULE}${FARM_G_RULE}${FARM_C_RESET} ${FARM_C_TITLE}%s${FARM_C_RESET} ${FARM_C_DIM}%s${FARM_C_RESET}\n" \
@@ -64,7 +65,7 @@ sub "flags:" "--yes --dry-run --delay=MIN"
 sub "" "--local --no-local"
 cmd "submit.sh" "Submit CommandScript job"
 sub "example:" "--allow-list node-01-gpu1,..."
-cmd "submit_shutdown.sh" "Submit suspended post-job shutdown"
+cmd "submit_shutdown.sh" "Submit post-job shutdown"
 cmd "power_action.sh" "Shared power engine"
 sub "usage:" "shutdown|reboot [flags]"
 
@@ -80,7 +81,7 @@ sub "flags:" "--yes --dry-run --local --no-local"
 
 echo ""
 sec "UTILITIES"
-cmd "selftest.sh" "Deep check + doctor (--quick for fast)"
+cmd "selftest.sh" "Deep check + doctor (--quick)"
 
 echo ""
 sec "QUICK TIPS"
@@ -102,7 +103,8 @@ dcmd "  scripts/core/wake.sh --silent"
 dlabel "Python Pre Job Script:"
 dcmd "deadline/prejob_wake.py"
 dnote "# Uses wake.sh --silent by default"
-dnote "# Env: FARM_WAKE_PREJOB_WAIT=45 FARM_WAKE_PREJOB_STRICT=1"
+dnote "# Env: FARM_WAKE_PREJOB_WAIT=45"
+dnote "#      FARM_WAKE_PREJOB_STRICT=1"
 dlabel "AutoWake systemd timer (user-level):"
 sub "toggle:" "Gegenschuss_farm_control.sh (option 9)"
 dlabel "Enable (manual):"

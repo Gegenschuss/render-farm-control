@@ -28,7 +28,6 @@ FARM_NODE_DEFS=(
 FARM_LINUX_HOME="/home/youruser"
 
 # --- Deadline ---
-FARM_DEADLINE_ALLOW_LIST="yourhost-gpu1"
 # Install paths used by scripts/tools/install_app.sh (Deadline installer).
 FARM_DEADLINE_PREFIX="/opt/Thinkbox/Deadline10"
 FARM_DEADLINE_REPO_DIR="/mnt/DeadlineRepository10"

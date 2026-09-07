@@ -28,6 +28,89 @@ trap 'clear; tput cnorm; echo -e "\n  ${GREEN}Exiting Farm Control.${NC}"; exit 
 trap 'tput cnorm' ERR
 trap 'handle_sigusr1' SIGUSR1
 
+# ---------------------------------------------------------------------------
+# MOUSE  (xterm button reporting, SGR encoding: gnome-terminal, kitty,
+# Terminal.app, iTerm2, ...). Wheel moves the highlight, a click selects,
+# a click on the highlighted item runs it.  FARM_MOUSE=0 disables it.
+# Selecting text while the menu is up: shift+drag (linux), option+drag (mac).
+# ---------------------------------------------------------------------------
+FARM_MOUSE="${FARM_MOUSE:-1}"
+MOUSE_ACTIVE=0
+MOUSE_STTY=""
+MOUSE_BTN="" MOUSE_COL="" MOUSE_ROW="" MOUSE_PRESS=0
+
+# Echo stays off for as long as reporting is on: wheel events arrive in
+# bursts and anything landing between two `read -s` calls would otherwise
+# be echoed by the tty as "^[[<64;16;23M".
+function mouse_on() {
+    [[ "$FARM_MOUSE" != "0" && -t 0 ]] || return 0
+    (( MOUSE_ACTIVE )) && return 0
+    MOUSE_STTY=$(stty -g 2>/dev/null)
+    stty -echo 2>/dev/null
+    printf '\033[?1000h\033[?1006h' > /dev/tty
+    MOUSE_ACTIVE=1
+}
+
+function mouse_off() {
+    (( MOUSE_ACTIVE )) || return 0
+    printf '\033[?1006l\033[?1000l' > /dev/tty
+    [[ -n "$MOUSE_STTY" ]] && stty "$MOUSE_STTY" 2>/dev/null
+    MOUSE_ACTIVE=0
+}
+trap 'mouse_off' EXIT
+
+# Read the rest of an SGR report after "ESC [ <": "btn;col;rowM" (press)
+# or "...m" (release). Returns 1 on anything malformed.
+function mouse_read_event() {
+    local c="" seq=""
+    while IFS= read -rsn1 -t 0.2 c; do
+        case "$c" in
+            M|m)       break ;;
+            [0-9]|';') seq+="$c" ;;
+            *)         return 1 ;;
+        esac
+    done
+    [[ "$c" == "M" || "$c" == "m" ]] || return 1
+    IFS=';' read -r MOUSE_BTN MOUSE_COL MOUSE_ROW <<< "$seq"
+    [[ -n "$MOUSE_BTN" && -n "$MOUSE_COL" && -n "$MOUSE_ROW" ]] || return 1
+    MOUSE_PRESS=0
+    [[ "$c" == "M" ]] && MOUSE_PRESS=1
+    return 0
+}
+
+# Resolve a click at (MOUSE_ROW, MOUSE_COL) to a menu entry: select it,
+# or run it if it is already the highlighted one. Pair/triple rows are
+# split at the same columns the renderer uses (PAIR_SPLIT, TRIPLE_SPLIT2).
+function mouse_click() {
+    local row=$(( MOUSE_ROW - 1 )) col=$(( MOUSE_COL - 1 ))
+    local i type shortcut plain _c _a ps target="" tshort=""
+    for i in "${!MENU_ENTRIES[@]}"; do
+        [[ "${ENTRY_ROW[$i]:-}" == "$row" ]] || continue
+        IFS='|' read -r type shortcut plain _c _a ps _ <<< "${MENU_ENTRIES[$i]}"
+        [[ "$type" == "ITEM" ]] || return 0
+        (( col < ${#plain} )) || return 0          # right of the row's text
+        case "$ps" in
+            L|T0) (( col <  PAIR_SPLIT ))    && target=$i ;;
+            R)    (( col >= PAIR_SPLIT ))    && target=$i ;;
+            T1)   (( col >= PAIR_SPLIT && col < TRIPLE_SPLIT2 )) && target=$i ;;
+            T2)   (( col >= TRIPLE_SPLIT2 )) && target=$i ;;
+            *)    target=$i ;;
+        esac
+        if [[ -n "$target" ]]; then tshort=$shortcut; break; fi
+    done
+    [[ -n "$target" && -n "${SHORTCUT_MAP[$tshort]+x}" ]] || return 0
+    local new_sel="${SHORTCUT_MAP[$tshort]}"
+    if (( new_sel == SELECTED_IDX )); then
+        execute_selected
+    else
+        old="${SELECTABLE[$SELECTED_IDX]}"
+        SELECTED_IDX=$new_sel
+        new="${SELECTABLE[$SELECTED_IDX]}"
+        render_item "$old" 0
+        render_item "$new" 1
+    fi
+}
+
 NC='\033[0m'
 BOLD='\033[1m'
 GREEN="$FARM_C_OK"
@@ -596,28 +679,27 @@ function build_menu() {
     MENU_ENTRIES+=( "HEADER|autowake" )
     MENU_ENTRIES+=( "ITEM|9|${PLAIN_OUT}|${COLOR_OUT}|autowake_toggle" )
 
-    MENU_ENTRIES+=( "HEADER|farm" )
-    make_line "x" "Status"        ; MENU_ENTRIES+=( "ITEM|x|${PLAIN_OUT}|${COLOR_OUT}|status" )
-    make_line "w" "Wake"          ; MENU_ENTRIES+=( "ITEM|w|${PLAIN_OUT}|${COLOR_OUT}|wake" )
-    add_pair "v" "NVTop"     "nvtop"                    "V" "+Workstation" "nvtop_local"
-    add_pair "t" "Control"   "control"                  "T" "+Workstation" "control_local"
-    add_pair "u" "Update"    "update"                   "U" "+Workstation" "update_local"
-    add_pair "r" "Reboot"    "reboot"                   "R" "+Workstation" "reboot_local"
-    add_pair "s" "Shutdown"  "shutdown"                 "S" "+Workstation" "shutdown_local"
-    add_pair "j" "Submit"    "deadline_shutdown_submit" "J" "+Workstation" "deadline_shutdown_submit_local"
-
-    MENU_ENTRIES+=( "HEADER|local" )
-    make_line "c" "Cache"                 ; MENU_ENTRIES+=( "ITEM|c|${PLAIN_OUT}|${COLOR_OUT}|cache" )
-    make_line "p" "Selftest"                ; MENU_ENTRIES+=( "ITEM|p|${PLAIN_OUT}|${COLOR_OUT}|selftest" )
-
     MENU_ENTRIES+=( "HEADER|app" )
-    add_pair "o" "Deadline"         "deadline_monitor" "O" "+Update"       "install_deadline"
     add_triple "h" "Houdini" "houdini" "H" "+Update" "install_houdini" "L" "+License" "license_houdini"
     add_pair "n" "Nuke"             "nuke"             "N" "+Update"       "nuke_update"
     add_pair "m" "Mocha"            "mocha"            "M" "+Update"       "mocha_import"
     add_pair "b" "Blender"          "blender"          "B" "+Update"       "blender_update"
     add_pair "d" "Davinci"          "davinci"          "D" "+Update"       "resolve_update"
     make_line "e" "SynthEyes"                  ; MENU_ENTRIES+=( "ITEM|e|${PLAIN_OUT}|${COLOR_OUT}|syntheyes" )
+
+    MENU_ENTRIES+=( "HEADER|farm" )
+    make_line "x" "Status"        ; MENU_ENTRIES+=( "ITEM|x|${PLAIN_OUT}|${COLOR_OUT}|status" )
+    make_line "w" "Wake"          ; MENU_ENTRIES+=( "ITEM|w|${PLAIN_OUT}|${COLOR_OUT}|wake" )
+    add_pair "v" "NVTop"     "nvtop"                    "V" "+Local"       "nvtop_local"
+    add_pair "t" "Control"   "control"                  "T" "+Local"       "control_local"
+    add_pair "u" "Update"    "update"                   "U" "+Local"       "update_local"
+    add_pair "r" "Reboot"    "reboot"                   "R" "+Local"       "reboot_local"
+    add_pair "s" "Shutdown"  "shutdown"                 "S" "+Local"       "shutdown_local"
+    add_pair "j" "Submit"    "deadline_shutdown_submit" "J" "+Local"       "deadline_shutdown_submit_local"
+    add_pair "o" "Deadline"  "deadline_monitor"         "O" "+Update"      "install_deadline"
+
+    MENU_ENTRIES+=( "HEADER|local" )
+    make_line "c" "Clean"                 ; MENU_ENTRIES+=( "ITEM|c|${PLAIN_OUT}|${COLOR_OUT}|cache" )
 
     MENU_ENTRIES+=( "HEADER|" )
     make_line "?" "Help" ""
@@ -782,7 +864,9 @@ function render_menu() {
     done
 
     printf "\n"
-    printf '%b\n' "  ${DIM}${FARM_G_PTR} enter run ${FARM_G_SEP} ↑↓ move ${FARM_G_SEP} key jump ${FARM_G_SEP} q quit${NC}"
+    local _mouse_hint=""
+    [[ "$FARM_MOUSE" != "0" ]] && _mouse_hint="click/wheel ${FARM_G_SEP} "
+    printf '%b\n' "  ${DIM}${FARM_G_PTR} enter run ${FARM_G_SEP} ↑↓ move ${FARM_G_SEP} ${_mouse_hint}key jump ${FARM_G_SEP} q quit${NC}"
 
     render_status_line
 }
@@ -980,21 +1064,15 @@ function run_action() {
             confirm_danger "DELETE ${FARM_LOCAL_NAME} CACHE" && \
             farm_sudo_auth && \
             sudo $SCRIPTS/tools/delcache.sh ;;
-        selftest)
-            set_terminal_title "Farm: Selftest"
-            printf "\n  ${CYAN}Running farm deep selftest...${NC}\n"
-            $SCRIPTS/tools/selftest.sh ;;
         houdini)
             set_terminal_title "Houdini"
             clear
             set_window_size "$APP_WINDOW_SIZE"
-            minimize_after 5
             $SCRIPTS/tools/launch_houdini.sh ;;
         nuke)
             set_terminal_title "Nuke"
             clear
             set_window_size "$APP_WINDOW_SIZE"
-            minimize_after 5
             $SCRIPTS/tools/launch_nuke.sh ;;
         syntheyes)
             set_terminal_title "SynthEyes"
@@ -1045,6 +1123,7 @@ function execute_selected() {
     # to prevent handle_sigusr1 from injecting tput sequences into output.
     trap '' SIGUSR1
 
+    mouse_off
     tput cnorm
     run_action "$action"
     local ret=$?
@@ -1071,6 +1150,48 @@ function execute_selected() {
 
     render_menu
     tput cnorm
+    mouse_on
+}
+
+# ---------------------------------------------------------------------------
+# HIGHLIGHT MOVEMENT  (↑↓ keys and mouse wheel)
+# ---------------------------------------------------------------------------
+function menu_move_up() {
+    if (( SELECTED_IDX > 0 )); then
+        old="${SELECTABLE[$SELECTED_IDX]}"
+        (( SELECTED_IDX-- ))
+        # Skip row-sharing items (pair right, triple slots 2+3)
+        # — reachable only via ←→
+        while (( SELECTED_IDX > 0 )); do
+            _ps6=""
+            IFS='|' read -r _ _ _ _ _ _ps6 _ \
+                <<< "${MENU_ENTRIES[${SELECTABLE[$SELECTED_IDX]}]}"
+            [[ "$_ps6" == "R" || "$_ps6" == "T1" || "$_ps6" == "T2" ]] || break
+            (( SELECTED_IDX-- ))
+        done
+        new="${SELECTABLE[$SELECTED_IDX]}"
+        render_item "$old" 0
+        render_item "$new" 1
+    fi
+}
+
+function menu_move_down() {
+    if (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); then
+        old="${SELECTABLE[$SELECTED_IDX]}"
+        (( SELECTED_IDX++ ))
+        # Skip row-sharing items (pair right, triple slots 2+3)
+        # — reachable only via ←→
+        while (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); do
+            _ps6=""
+            IFS='|' read -r _ _ _ _ _ _ps6 _ \
+                <<< "${MENU_ENTRIES[${SELECTABLE[$SELECTED_IDX]}]}"
+            [[ "$_ps6" == "R" || "$_ps6" == "T1" || "$_ps6" == "T2" ]] || break
+            (( SELECTED_IDX++ ))
+        done
+        new="${SELECTABLE[$SELECTED_IDX]}"
+        render_item "$old" 0
+        render_item "$new" 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1082,7 +1203,7 @@ refresh_autowake_state
 build_menu
 
 # SELECT DEFAULT MENU ITEM
-SELECTED_IDX="${SHORTCUT_MAP[x]}"
+SELECTED_IDX="${SHORTCUT_MAP[h]}"
 
 refresh_pm_state_async
 refresh_ping_state_async
@@ -1090,6 +1211,7 @@ refresh_ping_state_async
 tput civis
 render_menu
 tput cnorm
+mouse_on
 
 LAST_AUTO_REFRESH_EPOCH=$(date +%s)
 LAST_PING_REFRESH_EPOCH=$(date +%s)
@@ -1119,41 +1241,20 @@ while true; do
 
     if [[ "$key" == $'\x1b' ]]; then
         read -rsn2 -t 0.1 key2
+        if [[ "$key2" == '[<' ]]; then
+            # SGR mouse report: wheel = 64/65, left button = 0.
+            if mouse_read_event; then
+                case "$MOUSE_BTN" in
+                    64) menu_move_up ;;
+                    65) menu_move_down ;;
+                    0)  (( MOUSE_PRESS )) && mouse_click ;;
+                esac
+            fi
+            continue
+        fi
         case "$key2" in
-            '[A')
-                if (( SELECTED_IDX > 0 )); then
-                    old="${SELECTABLE[$SELECTED_IDX]}"
-                    (( SELECTED_IDX-- ))
-                    # Skip row-sharing items (pair right, triple slots 2+3)
-                    # — reachable only via ←→
-                    while (( SELECTED_IDX > 0 )); do
-                        _ps6=""
-                        IFS='|' read -r _ _ _ _ _ _ps6 _ \
-                            <<< "${MENU_ENTRIES[${SELECTABLE[$SELECTED_IDX]}]}"
-                        [[ "$_ps6" == "R" || "$_ps6" == "T1" || "$_ps6" == "T2" ]] || break
-                        (( SELECTED_IDX-- ))
-                    done
-                    new="${SELECTABLE[$SELECTED_IDX]}"
-                    render_item "$old" 0
-                    render_item "$new" 1
-                fi ;;
-            '[B')
-                if (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); then
-                    old="${SELECTABLE[$SELECTED_IDX]}"
-                    (( SELECTED_IDX++ ))
-                    # Skip row-sharing items (pair right, triple slots 2+3)
-                    # — reachable only via ←→
-                    while (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); do
-                        _ps6=""
-                        IFS='|' read -r _ _ _ _ _ _ps6 _ \
-                            <<< "${MENU_ENTRIES[${SELECTABLE[$SELECTED_IDX]}]}"
-                        [[ "$_ps6" == "R" || "$_ps6" == "T1" || "$_ps6" == "T2" ]] || break
-                        (( SELECTED_IDX++ ))
-                    done
-                    new="${SELECTABLE[$SELECTED_IDX]}"
-                    render_item "$old" 0
-                    render_item "$new" 1
-                fi ;;
+            '[A') menu_move_up ;;
+            '[B') menu_move_down ;;
             '[C'|'[D')
                 # ←→ : cycle through the current row's slots (pair/triple)
                 _cur_e="${SELECTABLE[$SELECTED_IDX]}"

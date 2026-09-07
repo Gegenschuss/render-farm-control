@@ -13,6 +13,8 @@ Usage: ./remote_menu.sh
 Interactive launcher for:
   - core/ping.sh
   - core/wake.sh
+  - core/launch_houdini.sh
+  - core/launch_nuke.sh
   - core/mount.sh
   - core/delcache.sh
   - core/unmount.sh
@@ -21,6 +23,8 @@ Interactive launcher for:
 Tips:
   - Use arrow keys to navigate
   - Press Enter or shortcut key to run
+  - Mouse: wheel moves, click selects, click again runs
+    (REMOTE_MOUSE=0 disables; select text with option/shift+drag)
 EOF
     exit 0
 fi
@@ -65,11 +69,100 @@ SELECTABLE=()
 ENTRY_ROW=()
 SELECTED_IDX=0
 
+# Mouse: xterm button reporting, SGR encoding (Terminal.app, iTerm2,
+# gnome-terminal, ...). Plain bash 3.2 constructs only.
+REMOTE_MOUSE="${REMOTE_MOUSE:-1}"
+MOUSE_ACTIVE=0
+MOUSE_STTY=""
+MOUSE_BTN="" MOUSE_COL="" MOUSE_ROW="" MOUSE_PRESS=0
+
+# Echo stays off while reporting is on, otherwise wheel bursts landing
+# between two `read -s` calls get echoed by the tty as "^[[<64;16;23M".
+mouse_on() {
+    [ "$REMOTE_MOUSE" != "0" ] && [ -t 0 ] || return 0
+    [ "$MOUSE_ACTIVE" -eq 1 ] && return 0
+    MOUSE_STTY=$(stty -g 2>/dev/null)
+    stty -echo 2>/dev/null
+    printf '\033[?1000h\033[?1006h' > /dev/tty
+    MOUSE_ACTIVE=1
+}
+
+mouse_off() {
+    [ "$MOUSE_ACTIVE" -eq 1 ] || return 0
+    printf '\033[?1006l\033[?1000l' > /dev/tty
+    [ -n "$MOUSE_STTY" ] && stty "$MOUSE_STTY" 2>/dev/null
+    MOUSE_ACTIVE=0
+}
+
 cleanup() {
+    mouse_off
     stty sane 2>/dev/null
     tput cnorm
 }
 trap cleanup EXIT
+
+# Read the rest of an SGR report after "ESC [ <": "btn;col;rowM" (press)
+# or "...m" (release). bash 3.2: read -t takes whole seconds only.
+mouse_read_event() {
+    local c="" seq=""
+    while IFS= read -rsn1 -t 1 c; do
+        case "$c" in
+            M|m)       break ;;
+            [0-9]|';') seq="${seq}${c}" ;;
+            *)         return 1 ;;
+        esac
+    done
+    [ "$c" = "M" ] || [ "$c" = "m" ] || return 1
+    IFS=';' read -r MOUSE_BTN MOUSE_COL MOUSE_ROW <<< "$seq"
+    [ -n "$MOUSE_BTN" ] && [ -n "$MOUSE_COL" ] && [ -n "$MOUSE_ROW" ] || return 1
+    MOUSE_PRESS=0
+    [ "$c" = "M" ] && MOUSE_PRESS=1
+    return 0
+}
+
+# A click selects the row under the pointer; a click on the highlighted
+# row runs it.
+mouse_click() {
+    local row=$(( MOUSE_ROW - 1 )) col=$(( MOUSE_COL - 1 ))
+    local i type shortcut plain idx
+    for i in "${!MENU_ENTRIES[@]}"; do
+        [ "${ENTRY_ROW[$i]:-}" = "$row" ] || continue
+        IFS='|' read -r type shortcut plain _ <<< "${MENU_ENTRIES[$i]}"
+        [ "$type" = "ITEM" ] || return 0
+        [ "$col" -lt "${#plain}" ] || return 0     # right of the row's text
+        idx="$(entry_index_for_shortcut "$shortcut")" || return 0
+        if [ "$idx" = "$SELECTED_IDX" ]; then
+            execute_selected
+        else
+            old="${SELECTABLE[$SELECTED_IDX]}"
+            SELECTED_IDX="$idx"
+            new="${SELECTABLE[$SELECTED_IDX]}"
+            render_item "$old" 0
+            render_item "$new" 1
+        fi
+        return 0
+    done
+}
+
+menu_move_up() {
+    if (( SELECTED_IDX > 0 )); then
+        old="${SELECTABLE[$SELECTED_IDX]}"
+        (( SELECTED_IDX-- ))
+        new="${SELECTABLE[$SELECTED_IDX]}"
+        render_item "$old" 0
+        render_item "$new" 1
+    fi
+}
+
+menu_move_down() {
+    if (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); then
+        old="${SELECTABLE[$SELECTED_IDX]}"
+        (( SELECTED_IDX++ ))
+        new="${SELECTABLE[$SELECTED_IDX]}"
+        render_item "$old" 0
+        render_item "$new" 1
+    fi
+}
 
 quit_menu() {
     clear
@@ -186,6 +279,11 @@ build_menu() {
     MENU_ENTRIES+=( "HEADER|start" )
     make_line "w" "Start"    "Wake + mount + connect"
     MENU_ENTRIES+=( "ITEM|w|${PLAIN_OUT}|${COLOR_OUT}|wake" )
+    MENU_ENTRIES+=( "HEADER|launch" )
+    make_line "h" "Houdini"  "Launch mac Houdini (foreground)"
+    MENU_ENTRIES+=( "ITEM|h|${PLAIN_OUT}|${COLOR_OUT}|houdini" )
+    make_line "n" "Nuke"     "Launch mac Nuke Indie (foreground)"
+    MENU_ENTRIES+=( "ITEM|n|${PLAIN_OUT}|${COLOR_OUT}|nuke" )
     MENU_ENTRIES+=( "HEADER|${shares_label}" )
     make_line "m" "Mount"     "Mount shares (Tailscale)"
     MENU_ENTRIES+=( "ITEM|m|${PLAIN_OUT}|${COLOR_OUT}|mount" )
@@ -296,7 +394,9 @@ render_menu() {
     done
 
     printf "\n"
-    printf '%b\n' "  ${DIM}${PTR} enter run ${SEP} ↑↓ move ${SEP} key jump ${SEP} q quit${NC}"
+    local mouse_hint=""
+    [ "$REMOTE_MOUSE" != "0" ] && mouse_hint="click/wheel ${SEP} "
+    printf '%b\n' "  ${DIM}${PTR} enter run ${SEP} ↑↓ move ${SEP} ${mouse_hint}key jump ${SEP} q quit${NC}"
 }
 
 run_action() {
@@ -310,6 +410,16 @@ run_action() {
         wake)
             printf "\n  ${CYAN}Running remote wake...${NC}\n\n"
             run_child bash "$SCRIPT_DIR/core/wake.sh"
+            return 0
+            ;;
+        houdini)
+            printf "\n  ${CYAN}Launching Houdini (foreground)...${NC}\n\n"
+            run_child bash "$SCRIPT_DIR/core/launch_houdini.sh"
+            return 0
+            ;;
+        nuke)
+            printf "\n  ${CYAN}Launching Nuke Indie (foreground)...${NC}\n\n"
+            run_child bash "$SCRIPT_DIR/core/launch_nuke.sh"
             return 0
             ;;
         mount)
@@ -365,6 +475,7 @@ execute_selected() {
     local action ret
     IFS='|' read -r _ _ _ _ action <<< "${MENU_ENTRIES[${SELECTABLE[$SELECTED_IDX]}]}"
     IN_MENU=0
+    mouse_off
     tput cnorm
     run_action "$action"
     ret=$?
@@ -382,6 +493,7 @@ execute_selected() {
     render_menu
     IN_MENU=1
     tput cnorm
+    mouse_on
 }
 
 build_menu
@@ -391,6 +503,7 @@ tput civis
 render_menu
 IN_MENU=1
 tput cnorm
+mouse_on
 
 while true; do
     key=""
@@ -403,25 +516,20 @@ while true; do
 
     if [[ "$key" == $'\x1b' ]]; then
         read -rsn2 -t 1 key2
+        if [[ "$key2" == '[<' ]]; then
+            # SGR mouse report: wheel = 64/65, left button = 0.
+            if mouse_read_event; then
+                case "$MOUSE_BTN" in
+                    64) menu_move_up ;;
+                    65) menu_move_down ;;
+                    0)  [ "$MOUSE_PRESS" -eq 1 ] && mouse_click ;;
+                esac
+            fi
+            continue
+        fi
         case "$key2" in
-            '[A')
-                if (( SELECTED_IDX > 0 )); then
-                    old="${SELECTABLE[$SELECTED_IDX]}"
-                    (( SELECTED_IDX-- ))
-                    new="${SELECTABLE[$SELECTED_IDX]}"
-                    render_item "$old" 0
-                    render_item "$new" 1
-                fi
-                ;;
-            '[B')
-                if (( SELECTED_IDX < ${#SELECTABLE[@]} - 1 )); then
-                    old="${SELECTABLE[$SELECTED_IDX]}"
-                    (( SELECTED_IDX++ ))
-                    new="${SELECTABLE[$SELECTED_IDX]}"
-                    render_item "$old" 0
-                    render_item "$new" 1
-                fi
-                ;;
+            '[A') menu_move_up ;;
+            '[B') menu_move_down ;;
         esac
     elif [[ $ret -eq 0 && "$key" == "" ]]; then
         execute_selected

@@ -146,7 +146,7 @@ clean_defined_app() {
     for DIR in "${PATHS_ARRAY[@]}"; do
         if [ -d "$DIR" ]; then
             SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
-            info "Found: $DIR (${SIZE:-?})"
+            info "Found: ${C_DIM}$DIR${C_RESET} ${C_WARN}(${SIZE:-?})${C_RESET}"
             FOUND_ANY=true
         fi
     done
@@ -157,7 +157,7 @@ clean_defined_app() {
         return
     fi
 
-    prompt_choice "Purge contents of $APP_NAME? [y/N, q=cancel all]"
+    prompt_choice "Purge contents of ${C_ACCENT}$APP_NAME${C_RESET}${C_BOLD}? [y/N, q=cancel all]"
     local rc=$?
     if [ "$rc" -eq 2 ]; then
         warn "Aborted by user"
@@ -204,8 +204,8 @@ clean_dynamic_root() {
         SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
 
         echo
-        info "Project: $FOLDER_NAME (${SIZE:-?})"
-        prompt_choice "  > DELETE '$FOLDER_NAME' entirely? [y/N, q=cancel all]"
+        info "Project: ${C_BOLD}${C_ACCENT}$FOLDER_NAME${C_RESET} ${C_WARN}(${SIZE:-?})${C_RESET}"
+        prompt_choice "  > DELETE '${C_ACCENT}$FOLDER_NAME${C_RESET}${C_BOLD}' entirely? [y/N, q=cancel all]"
         rc=$?
         if [ "$rc" -eq 2 ]; then
             warn "Aborted by user"

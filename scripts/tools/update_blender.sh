@@ -100,10 +100,13 @@ if [ -z "$REMOTE_FILE" ]; then
                 exit 1
             fi
             echo "  Found: $(basename "$COPY_TAR")"
+            farm_spin_start "copying $(basename "$COPY_TAR") to install share"
             cp "$COPY_TAR" "$SEARCH_DIR/" || {
+                farm_spin_stop
                 farm_print_error "Copy failed."
                 exit 1
             }
+            farm_spin_stop
             farm_print_ok "Copied to install share."
             echo ""
         fi

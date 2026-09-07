@@ -421,6 +421,27 @@ then
     echo "/etc/$AUTOFS_MAP_NAME aktualisiert."
 fi
 
+# Autofs Shutdown-Ordering (Tailscale-Fix)
+# /mnt/houdini und /mnt/nuke liegen auf \\lester und werden - je nach
+# DNS-Rennen zwischen MagicDNS und FritzBox - ueber Tailscale erreicht.
+# Ohne diese Reihenfolge stoppt systemd tailscaled zuerst; autofs haengt dann
+# ~3 Min. beim umount eines Shares, dessen Route schon weg ist, und wird per
+# SIGKILL beendet - der Reboot dauert 3 Min. laenger. TimeoutStopSec kappt
+# zusaetzlich den Fall, dass der Server aus einem anderen Grund nicht antwortet.
+sudo mkdir -p /etc/systemd/system/autofs.service.d/
+if write_root_file_if_changed "/etc/systemd/system/autofs.service.d/override.conf" <<'AUTOFS_OVERRIDE_EOF'
+[Unit]
+After=tailscaled.service network-online.target remote-fs-pre.target
+Wants=network-online.target
+
+[Service]
+TimeoutStopSec=20
+AUTOFS_OVERRIDE_EOF
+then
+    sudo systemctl daemon-reload
+    echo "autofs Shutdown-Ordering (override.conf) aktualisiert."
+fi
+
 # Autofs Neustart und Aktivierung
 sudo systemctl enable --now autofs
 if [ "$AUTOFS_CHANGED" -eq 1 ]; then
@@ -622,15 +643,15 @@ Description=Deadline 10 Launcher Service
 After=network.target autofs.service
 Requires=autofs.service
 [Service]
-Environment=\"DEADLINE_LAUNCHER_LISTENING_IP=0.0.0.0\"
-Environment=\"DEADLINE_REMOTE_ADMIN_ENABLED=True\"
+Environment="DEADLINE_LAUNCHER_LISTENING_IP=0.0.0.0"
+Environment="DEADLINE_REMOTE_ADMIN_ENABLED=True"
 Type=simple
 Restart=always
 RestartSec=10
 User=$NODE_NAME
 LimitNOFILE=200000
-ExecStartPre=/bin/bash -c 'for i in \$(seq 1 30); do ls /mnt/DeadlineRepository10 > /dev/null 2>&1 && exit 0; echo \"Waiting for repo mount... (\$i/30)\"; sleep 2; done; exit 1'
-ExecStart=/usr/bin/bash -l -c \"/opt/Thinkbox/Deadline10/bin/deadlinelauncher -daemon -nogui\"
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 30); do ls /mnt/DeadlineRepository10 > /dev/null 2>&1 && exit 0; echo "Waiting for repo mount... (\$i/30)"; sleep 2; done; exit 1'
+ExecStart=/usr/bin/bash -l -c "/opt/Thinkbox/Deadline10/bin/deadlinelauncher -daemon -nogui"
 ExecStop=/opt/Thinkbox/Deadline10/bin/deadlinelauncher -shutdownall
 SuccessExitStatus=143
 [Install]
@@ -851,12 +872,33 @@ if [[ -n "$SSH_CONNECTION" ]]; then
 fi
 EOF
 
-# 3. .bashrc Dashboard Logik
+# 3. TTY1 Splash + .bashrc Dashboard Logik
+#
+# Die Splash-Datei ist die einzige Quelle: private/rendel_tty.sh im Repo wird
+# nach ~/rendel_tty.sh installiert. Fruehere Versionen haben den Splash direkt
+# in die ~/.bashrc geschrieben, wodurch Repo und Node auseinanderliefen.
+RENDEL_SRC="$SCRIPT_DIR/../../private/rendel_tty.sh"
+
+if [ "$TTY1_MODE" = "render_dashboard" ]; then
+    if [ -f "$RENDEL_SRC" ]; then
+        if write_user_file_if_changed "$HOME/rendel_tty.sh" 0755 < "$RENDEL_SRC"; then
+            echo "TTY1-Splash installiert: $HOME/rendel_tty.sh"
+        else
+            echo "TTY1-Splash bereits aktuell."
+        fi
+    else
+        echo "WARNUNG: $RENDEL_SRC fehlt - TTY1-Splash wird nicht installiert."
+    fi
+fi
+
 if step_done "bashrc_dashboard"; then
     echo "Dashboard-Block in ~/.bashrc bereits gesetzt - überspringe."
 else
-    # Alten Block entfernen (verwendet den exakten Matcher)
+    # Aktuellen Block entfernen ...
     sed -i '/# RENDER NODE DASHBOARD START/,/# RENDER NODE DASHBOARD END/d' ~/.bashrc
+    # ... und den handgepflegten Alt-Block, dem der START-Marker fehlt.
+    # Ohne das bleibt er stehen und der neue Block wird ein zweites Mal aktiv.
+    sed -i '/^# --- .* RENDER NODE ---$/,/# RENDER NODE DASHBOARD END/d' ~/.bashrc
 
     # OS-aware update alias
     if [ "$OS_ID" = "ubuntu" ]; then
@@ -872,63 +914,20 @@ else
 alias update="${_UPDATE_CMD}"
 
 if [[ "\$(tty)" == "/dev/tty1" ]]; then
-    TERM_COLS=\$(tput cols)
-    TERM_ROWS=\$(tput lines)
-
-    RENDEL=(
-        "██████╗ ███████╗███╗   ██╗██████╗ ███████╗██╗      ██╗"
-        "██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔════╝██║      ██║"
-        "██████╔╝█████╗  ██╔██╗ ██║██║  ██║█████╗  ██║      ██║"
-        "██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██╔══╝  ██║      ╚═╝"
-        "██║  ██║███████╗██║ ╚████║██████╔╝███████╗███████╗  ██╗"
-        "╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚══════╝  ╚═╝"
-    )
-
-    BANGS=(
-        " ██╗ ██╗ ██╗ ██╗ ██╗ ██╗ ██╗ ██╗ ██╗ ██╗"
-        " ╚═╝ ██║ ╚═╝ ╚═╝ ╚═╝ ██║ ╚═╝ ╚═╝ ╚═╝ ╚═╝"
-        "     ██║         ╚═╝  ██║               "
-        "     ╚═╝              ╚═╝               "
-    )
-
-    SUBTITLE="R E N D E R   F A R M   N O D E"
-    DIVIDER="════════════════════════════════════════════════════════════════════════"
-    NODE_LINE="NODE: \$(hostname)   |   STATUS: IDLE"
-    PROMPT="[ R ] REBOOT       [ S ] SHUTDOWN"
-
-    TOTAL_LINES=20
-    START_ROW=\$(( (TERM_ROWS - TOTAL_LINES) / 2 ))
-
-    pad() {
-        local text="\$1"
-        local color="\$2"
-        local len=\${#text}
-        local spaces=\$(( (TERM_COLS - len) / 2 ))
-        printf "%\${spaces}s" ""
-        echo -e "\${color}\${text}\e[0m"
-    }
+    export TERM=linux
+    export NCURSES_NO_UTF8_ACS=1
+    export RENDEL_STATUS="CRUNCHING"
 
     clear
-    for ((i=0; i<START_ROW; i++)); do echo; done
+    echo -e "\n  Prüfe Mounts..."
+    ls /mnt/studio > /dev/null 2>&1 && echo "  [OK] Studio-Mount aktiv" || echo "  [!!] Studio-Mount FEHLT"
 
-    for line in "\${RENDEL[@]}"; do pad "\$line" "\e[32m"; done
-    echo
-    for line in "\${BANGS[@]}"; do pad "\$line" "\e[31m"; done
-    echo
-    pad "\$SUBTITLE" "\e[32m"
-    pad "\$DIVIDER" "\e[32m"
-    pad "\$NODE_LINE" "\e[32m"
-    echo
-    pad "\$PROMPT" "\e[32m"
-    echo
+    sleep 2
+    setterm -cursor off
 
-    while true; do
-        read -r -n 1 key
-        case "\$key" in
-            r|R) sudo reboot ;;
-            s|S) sudo shutdown now ;;
-        esac
-    done
+    "\$HOME/rendel_tty.sh"
+
+    setterm -cursor on
 fi
 # RENDER NODE DASHBOARD END
 BASHEOF
@@ -976,8 +975,16 @@ fi
 # FINALE AKTIVIERUNG ---
 # daemon-reload ensures systemd picks up any unit files written in this run.
 sudo systemctl daemon-reload
+# Deadline Launcher wird bewusst NICHT aktiviert.
+# Die Worker laufen als eigenstaendige systemd-Units (deadline-worker@gpuN) und
+# brauchen den Launcher nicht - Repository-Reporting, Monitor-Sichtbarkeit und
+# Live-Logs laufen ueber den Worker selbst. Der Launcher dient nur der Remote-
+# Administration aus dem Deadline Monitor (Port 17000); die Farm wird stattdessen
+# per SSH gesteuert (scripts/core/power_action.sh).
+# WICHTIG: nur "disable", niemals "disable --now" - ExecStop des Launchers ruft
+# "deadlinelauncher -shutdownall" auf und wuerde laufende Renders mit beenden.
 if service_exists "deadline10launcher.service"; then
-    sudo systemctl enable --now deadline10launcher
+    sudo systemctl disable deadline10launcher 2>/dev/null || true
 fi
 if service_exists "deadline-ip-fix.service"; then
     sudo systemctl enable --now deadline-ip-fix.service
@@ -1136,7 +1143,7 @@ AUTOFS / MOUNTS
 
 SYSTEMD SERVICES
   /etc/systemd/system/wol.service                      Wake-on-LAN (NIC: $NIC)
-  /etc/systemd/system/deadline10launcher.service        Deadline 10 Launcher
+  /etc/systemd/system/deadline10launcher.service        Deadline 10 Launcher (installiert, NICHT aktiviert)
   /etc/systemd/system/deadline-ip-fix.service           IP override fix (runs after launcher)
   /etc/systemd/system/deadline-worker@.service          Worker template unit
     Active workers:
@@ -1202,8 +1209,12 @@ SSH / LOGIN
 TTY1 DASHBOARD
   ~/.bashrc  (RENDER NODE DASHBOARD block)
     TTY1 mode: $TTY1_MODE
-    Shows RENDELL logo + R=Reboot / S=Shutdown  (render_dashboard)
-    or launches nvtop                            (nvtop / dual-boot mode)
+    Startet ~/rendel_tty.sh                      (render_dashboard)
+    oder nvtop                                   (nvtop / dual-boot mode)
+  ~/rendel_tty.sh   installiert aus private/rendel_tty.sh
+    RENDELL-Logo in den farm-control-Farben, R=Reboot / S=Shutdown.
+    R und S pruefen erst auf laufende Paketarbeit (apt/dpkg/unattended-
+    upgrades) und blockieren solange; F erzwingt trotzdem.
 
 MISC
   /var/tmp/render-node-setup.state   Idempotency state file (delete to re-run steps)

@@ -54,7 +54,8 @@ SESSION="farm_update"
 farm_print_title "FARM UPDATE"
 
 # --- REMOTE COMMAND (passwordless sudo) ---
-REMOTE_CMD="sudo DEBIAN_FRONTEND=noninteractive \
+REMOTE_CMD="$(farm_busy_snippet apt-update 'apt update + full-upgrade')
+sudo DEBIAN_FRONTEND=noninteractive \
 apt update && \
 sudo DEBIAN_FRONTEND=noninteractive \
 apt full-upgrade -y && \

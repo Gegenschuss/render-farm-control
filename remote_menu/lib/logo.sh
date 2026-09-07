@@ -18,7 +18,7 @@ LOGO_LINES=(
 '|  |  | -_| . | -_|   |_ -|  _|   | | |_ -|_ -|'
 '|_____|___|_  |___|_|_|___|___|_|_|___|___|___|'
 '          |___|'
-'                               farm-control'
+'                                   farm-control'
 )
 
 # Center the art in the 60-column UI: shift every line by the same pad

@@ -763,16 +763,92 @@ print_windows_tasks() {
 # Returns:
 # 0 = all clear
 # 1 = warnings found
+# --- NODE BUSY LOCK ---
+# Long remote jobs (apt runs, Houdini/Deadline installs) drop a sentinel into
+# /run/farm-busy so the tty1 splash and the reboot/shutdown paths refuse to
+# pull the machine out from under them.
+#
+# /run is a tmpfs, so nothing survives a reboot, and every sentinel records the
+# pid that owns it: if that job is killed, the sentinel is treated as stale and
+# removed rather than blocking the node forever.
+FARM_BUSY_DIR=/run/farm-busy
+
+# Emits shell that claims the busy lock for the length of a remote command.
+# Callers paste this at the top of the script they hand to ssh.
+farm_busy_snippet() {
+    local tag="$1" desc="$2"
+    cat <<EOF
+sudo -n mkdir -p $FARM_BUSY_DIR 2>/dev/null || true;
+printf '%s\n%s\n' "\$\$" "$desc" | sudo -n tee $FARM_BUSY_DIR/$tag >/dev/null 2>&1 || true;
+trap 'sudo -n rm -f $FARM_BUSY_DIR/$tag 2>/dev/null' EXIT INT TERM HUP;
+EOF
+}
+
+# Prints one line per piece of live package work, nothing when the node is
+# idle. Matching happens on the full command line rather than on comm: comm is
+# truncated to 15 characters, so "unattended-upgrade" never appears there, and
+# the plain "apt" front-end is a different binary from "apt-get".
+#
+# Resident daemons are deliberately NOT matched -- packagekitd, snapd,
+# flatpak-system-helper and "pop-upgrade daemon" all run permanently, so
+# matching them would block every reboot. The real work they drive takes the
+# dpkg locks, which the fuser probe below sees.
 farm_get_update_blockers() {
-    local NODE=$1
-    ssh -F ~/.ssh/config -o ConnectTimeout=3 -o LogLevel=ERROR "$NODE" '
-ps -eo comm,args | awk '"'"'
-    $1 == "apt-get" { print; found=1; next }
-    ($1 == "unattended-upgrade" || $1 == "unattended-upgrades") { print; found=1; next }
-    ($1 == "dpkg" && $0 ~ /--configure|--unpack|--install/) { print; found=1; next }
-    END { if (!found) exit 1 }
-'"'"'
-' 2>/dev/null
+    local NODE=$1 OUT RC
+
+    OUT=$(ssh -F ~/.ssh/config -o ConnectTimeout=5 -o LogLevel=ERROR \
+              "$NODE" bash -s <<'PROBE'
+LOCKS='/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock'
+RE_APT='(^|[/[:space:]])(apt|apt-get|aptitude|synaptic|unattended-upgrade)([[:space:]]|$)'
+RE_DPKG='(^|[/[:space:]])dpkg([[:space:]]|$).*(--configure|--unpack|--install|--pending|--remove|--purge)'
+RE_BUNDLE='(^|[/[:space:]])(flatpak|snap)([[:space:]]|$).*(install|update|refresh|upgrade)'
+RE_POP='(^|[/[:space:]])pop-upgrade[[:space:]]+(release|package|recovery)([[:space:]]|$)'
+# Backstop for installers started by hand, outside the farm scripts.
+RE_INSTALL='(houdini\.install|DeadlineClient-|DeadlineRepository-|[Ii]nstaller\.run)'
+
+# Busy lock first: it names the actual job, and it is the only thing that
+# knows about installs that are not driven through apt (Houdini, Deadline).
+for f in /run/farm-busy/*; do
+    [ -e "$f" ] || continue
+    pid=$(head -n 1 "$f" 2>/dev/null)
+    desc=$(sed -n 2p "$f" 2>/dev/null)
+    # /proc rather than kill -0: works even when the owner is another user.
+    if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+        echo "${desc:-$(basename "$f")}"
+    else
+        sudo -n rm -f "$f" 2>/dev/null || true
+    fi
+done
+
+if command -v fuser >/dev/null 2>&1 && sudo -n fuser $LOCKS >/dev/null 2>&1; then
+    echo 'dpkg/apt lock is held'
+fi
+
+# pgrep never reports its own pid, so the patterns cannot match themselves.
+pgrep -f "$RE_APT"    -a 2>/dev/null
+pgrep -f "$RE_DPKG"   -a 2>/dev/null
+pgrep -f "$RE_BUNDLE" -a 2>/dev/null
+pgrep -f "$RE_POP"    -a 2>/dev/null
+pgrep -f "$RE_INSTALL" -a 2>/dev/null
+
+# unattended-upgrades.service stays active permanently on Ubuntu; these two
+# go active only while a run is actually in progress.
+for u in apt-daily.service apt-daily-upgrade.service; do
+    systemctl is-active --quiet "$u" 2>/dev/null && echo "$u is running"
+done
+exit 0
+PROBE
+)
+    RC=$?
+
+    # The OS probe already proved ssh works, so a failure here is anomalous.
+    # Report it as a blocker instead of failing open and clearing the node.
+    if [ "$RC" -ne 0 ]; then
+        echo "update probe failed on $NODE (ssh rc=$RC)"
+        return 0
+    fi
+
+    printf '%s\n' "$OUT" | sed '/^[[:space:]]*$/d'
 }
 
 check_update_blockers() {

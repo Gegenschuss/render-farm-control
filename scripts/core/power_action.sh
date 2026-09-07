@@ -331,7 +331,7 @@ run_shutdown() {
     local -a SHUTDOWN_NODES=()
     local -A SEEN_NODES=()
 
-    [ "$FORCE_ACTION" -eq 1 ] && farm_print_warn "WARNING: --force active — skipping update/activity safety checks."
+    [ "$FORCE_ACTION" -eq 1 ] && farm_print_warn "WARNING: --force active — skipping update/install safety checks."
 
     # Build ordered node list (NODES + any extra dual-boot nodes not already listed).
     for NODE in "${NODES[@]}"; do
@@ -392,7 +392,7 @@ run_shutdown() {
                         target_nodes+=("$NODE")
                         echo "  $(farm_node_tag "$NODE") Linux - queued for shutdown"
                     else
-                        echo "  $(farm_node_tag "$NODE") Linux - BLOCKED (update activity detected)"
+                        echo "  $(farm_node_tag "$NODE") Linux - BLOCKED (update/install activity)"
                     fi
                     ;;
                 1) echo "$(farm_node_tag "$NODE") Windows - skipped" ;;
@@ -575,7 +575,7 @@ EOF
                 blocked=1
             fi
             if [ "$blocked" -eq 1 ]; then
-                printf 'Linux - BLOCKED (update activity)\n' > "${_stat[$i]}"
+                printf 'Linux - BLOCKED (update/install activity)\n' > "${_stat[$i]}"
                 printf 'blocked\n'                           > "${_cmd_f[$i]}"
                 exit 0
             fi
@@ -673,11 +673,11 @@ EOF
 
     # ── security gate ─────────────────────────────────────────────────────────
     if [ "${#BLOCKED_NODES[@]}" -gt 0 ] && [ "$FORCE_ACTION" -ne 1 ]; then
-        farm_print_error "Security stop: update-related activity detected."
+        farm_print_error "Security stop: update or install activity detected."
         echo "  Blocked node(s):"
         for node in "${BLOCKED_NODES[@]}"; do echo "  - $node"; done
         echo ""
-        echo "  Resolve updates first or rerun with --force to override."
+        echo "  Let the update/install finish, or rerun with --force to override."
         exit 1
     fi
 
@@ -771,7 +771,7 @@ run_reboot() {
     local local_choice reboot_scope_choice
 
     [ "$FORCE_ACTION" -eq 1 ] && \
-        farm_print_warn "WARNING: --force active — skipping update/activity safety checks."
+        farm_print_warn "WARNING: --force active — skipping update/install safety checks."
     "$FARM_SCRIPTS_DIR/lib/header.sh"
     farm_print_title "FARM REBOOT"
 
@@ -931,7 +931,7 @@ EOF
                 blocked=1
             fi
             if [ "$blocked" -eq 1 ]; then
-                printf 'Linux - BLOCKED (update activity)\n' > "${_stat[$i]}"
+                printf 'Linux - BLOCKED (update/install activity)\n' > "${_stat[$i]}"
                 printf 'blocked\n'                           > "${_cmd_f[$i]}"
                 exit 0
             fi
@@ -1044,11 +1044,11 @@ EOF
 
     # ── security gate ─────────────────────────────────────────────────────────
     if [ "${#BLOCKED_NODES[@]}" -gt 0 ] && [ "$FORCE_ACTION" -ne 1 ]; then
-        farm_print_error "Security stop: update-related activity detected."
+        farm_print_error "Security stop: update or install activity detected."
         echo "  Blocked node(s):"
         for node in "${BLOCKED_NODES[@]}"; do echo "  - $node"; done
         echo ""
-        echo "  Resolve updates first or rerun with --force to override."
+        echo "  Let the update/install finish, or rerun with --force to override."
         exit 1
     fi
 

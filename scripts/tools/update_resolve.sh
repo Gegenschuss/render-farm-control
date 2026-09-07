@@ -206,10 +206,13 @@ if [ -n "$FOUND_ZIP" ] && [ ! -f "$SEARCH_DIR/$(basename "$FOUND_ZIP")" ]; then
             echo "  [dry-run] would copy to install share."
         else
             mkdir -p "$SEARCH_DIR" 2>/dev/null
+            farm_spin_start "copying $(basename "$FOUND_ZIP") to install share"
             cp "$FOUND_ZIP" "$SEARCH_DIR/" || {
+                farm_spin_stop
                 farm_print_error "Copy failed."
                 exit 1
             }
+            farm_spin_stop
             farm_print_ok "Copied to install share."
         fi
     fi

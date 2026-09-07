@@ -59,11 +59,56 @@ farm_install_check_state() {
     fi
 }
 
+# --- REMOTE STEP SPINNER -----------------------------------------------------
+
+# Emit a self-contained "spin while this command runs" block for the generated
+# installer scripts. Those are base64'd and run over ssh on the node, where
+# lib/config.sh is not available, so the spinner has to be inlined and ASCII
+# only. Long steps (copying/extracting a multi-GB archive) otherwise sit on a
+# dead pane for minutes with no sign of life.
+#   $1 = label (printed as "<label>...")
+#   $2 = command to run
+farm_install_spin_snippet() {
+    local label="$1" cmd="$2" tpl
+    tpl=$(cat << 'SNIP'
+@@CMD@@ &
+_farm_pid=$!
+_farm_i=0
+_farm_frames='|/-\'
+[ -t 1 ] || echo "  @@LABEL@@..."
+while kill -0 "$_farm_pid" 2>/dev/null; do
+    if [ -t 1 ]; then
+        printf '\r\033[K  %s  @@LABEL@@... %ss' \
+            "${_farm_frames:$((_farm_i % 4)):1}" "$((_farm_i / 5))"
+    fi
+    _farm_i=$((_farm_i + 1))
+    sleep 0.2
+done
+wait "$_farm_pid"
+_farm_rc=$?
+[ -t 1 ] && printf '\r\033[K'
+if [ "$_farm_rc" -ne 0 ]; then
+    echo "  ERROR: @@LABEL@@ failed (rc=$_farm_rc)."
+    echo "  Press [RETURN] to close."
+    read
+    exit 1
+fi
+if [ -t 1 ]; then
+    echo "  @@LABEL@@... done"
+fi
+SNIP
+)
+    tpl="${tpl//@@CMD@@/$cmd}"
+    tpl="${tpl//@@LABEL@@/$label}"
+    printf '%s\n' "$tpl"
+}
+
 farm_install_build_deadline_remote_script() {
     local filename="$1"
     local search_dir="$2"
     local install_dir="$3"
     cat << EOF
+$(farm_busy_snippet deadline "Deadline install: $filename")
 echo ""
 echo -e "  ${FARM_C_RULE}────────────────────────────────────────────────────────────${FARM_C_RESET}"
 echo "  INSTALLING:"
@@ -73,10 +118,8 @@ echo ""
 echo "  Step 1: Preparing directory..."
 rm -rf "$install_dir" && mkdir -p "$install_dir"
 cd "$install_dir"
-echo "  Step 2: Copying file..."
-cp "$search_dir/$filename" .
-echo "  Step 3: Extracting..."
-tar -xf "$filename"
+$(farm_install_spin_snippet "Step 2: Copying file" "cp \"$search_dir/$filename\" .")
+$(farm_install_spin_snippet "Step 3: Extracting" "tar -xf \"$filename\"")
 echo "  Step 4: Installing..."
 echo ""
 RUN_FILE=\$(find . -name "DeadlineClient-*-linux-x64-installer.run" | head -n 1)
@@ -123,10 +166,8 @@ echo ""
 echo "  Step 1: Preparing directory..."
 rm -rf "$install_dir" && mkdir -p "$install_dir"
 cd "$install_dir"
-echo "  Step 2: Copying file..."
-cp "$search_dir/$filename" .
-echo "  Step 3: Extracting..."
-tar -xf "$filename"
+$(farm_install_spin_snippet "Step 2: Copying file" "cp \"$search_dir/$filename\" .")
+$(farm_install_spin_snippet "Step 3: Extracting" "tar -xf \"$filename\"")
 echo "  Step 4: Installing..."
 echo ""
 RUN_FILE=\$(find . -name "DeadlineClient-*-linux-x64-installer.run" | head -n 1)
@@ -164,6 +205,7 @@ farm_install_build_houdini_cmd() {
     local search_dir="$2"
     local install_dir="$3"
     cat << EOF
+$(farm_busy_snippet houdini "Houdini install: $filename")
 echo '';
 echo -e "  ${FARM_C_RULE}────────────────────────────────────────────────────────────${FARM_C_RESET}";
 echo '  INSTALLING:';
@@ -173,10 +215,8 @@ echo '';
 rm -rf "$install_dir";
 mkdir -p "$install_dir";
 cd "$install_dir";
-echo '  Step 1: Copying file...';
-cp "$search_dir/$filename" .;
-echo '  Step 2: Extracting...';
-tar -xf "$filename";
+$(farm_install_spin_snippet "Step 1: Copying file" "cp \"$search_dir/$filename\" .")
+$(farm_install_spin_snippet "Step 2: Extracting" "tar -xf \"$filename\"")
 echo '  Step 3: Entering directory...';
 cd houdini-*/;
 echo '  Step 4: Installing...';
