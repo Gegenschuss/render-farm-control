@@ -56,7 +56,12 @@ if [ "$UI_OS" = "mac" ]; then
     )
 
     # Mocha Pro (Boris FX, older Imagineer Systems installs)
+    # Current plugin builds write their image scratch to
+    # ~/Library/Caches/BorisFX/<Mocha Pro Plugin|Mocha Pro|Mocha AE*>/ImageCache
+    # (note: "BorisFX" without a space). Only ImageCache is purged there —
+    # the sibling folders hold licence and shader caches.
     declare -a MOCHA_PATHS=(
+        "$HOME"/Library/Caches/BorisFX/Mocha*/ImageCache
         "$HOME"/Library/Application\ Support/Boris\ FX/Mocha*/Cache
         "$HOME"/Library/Application\ Support/Imagineer\ Systems/mocha*/Cache
         "$HOME/Library/Caches/Boris FX"
